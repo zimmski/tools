@@ -11,8 +11,12 @@ type StructTagTest struct {
 	B   int "\tx:\"y\""        // ERROR "not compatible with reflect.StructTag.Get: bad syntax for struct tag key"
 	C   int "x:\"y\"\tx:\"y\"" // ERROR "not compatible with reflect.StructTag.Get"
 	D   int "x:`y`"            // ERROR "not compatible with reflect.StructTag.Get: bad syntax for struct tag value"
-	OK0 int `x:"y" u:"v" w:""`
-	OK1 int `x:"y:z" u:"v" w:""` // note multiple colons.
+	OK0 int `x:"y"`
+	OK1 int `x:"y" u:"v" w:""`
+	OK2 int `x:"y:z" u:"v" w:""`      // note multiple colons.
+	OK3 int ` x:"y"  u:"v"    w:""  ` // ignore spaces outside of values
+	OK3 int `x:"y z"`                 // especially ignore spaces inside of values
+	OK4 int `x:"y\nz"`                // ignore escaping
 }
 
 type UnexportedEncodingTagTest struct {

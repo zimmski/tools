@@ -11,8 +11,8 @@ import (
 	"go/ast"
 	"reflect"
 	"strconv"
-	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 func init() {
@@ -70,33 +70,81 @@ var (
 // in the canonical format, which is a space-separated list of key:"value"
 // settings.
 func validateStructTag(tag string) error {
-	elems := strings.Split(tag, " ")
-	for _, elem := range elems {
-		if elem == "" {
-			continue
+	l := len(tag)
+
+	for i := 0; i < l; i++ {
+		// Ignore spaces
+		for i < l && tag[i] == ' ' {
+			i++
 		}
-		fields := strings.SplitN(elem, ":", 2)
-		if len(fields) != 2 {
-			return errTagSyntax
+
+		if i >= l {
+			break
 		}
-		key, value := fields[0], fields[1]
-		if len(key) == 0 || len(value) < 2 {
-			return errTagSyntax
-		}
+
 		// Key must not contain control characters or quotes.
-		for _, r := range key {
-			if r == '"' || unicode.IsControl(r) {
+		j := i
+		for ; i < l; i++ {
+			if tag[i] == ':' {
+				// Key must not be empty
+				if i == j {
+					return errTagSyntax
+				}
+
+				i++
+
+				break
+			} else if r, w := utf8.DecodeRuneInString(tag[i:]); tag[i] == '"' || unicode.IsControl(r) {
 				return errTagKeySyntax
+			} else {
+				// Move i further along if we encountered an UTF8 character
+				if w > 1 {
+					i += w - 1
+				}
 			}
 		}
-		if value[0] != '"' || value[len(value)-1] != '"' {
+
+		// There must be room for a quoted string
+		if i > l-2 {
+			return errTagSyntax
+		}
+
+		// Check the starting quote
+		if tag[i] != '"' {
 			return errTagValueSyntax
 		}
-		// Value must be quoted string
-		_, err := strconv.Unquote(value)
+
+		j = i
+
+		// Jump over quote
+		i++
+
+		for i < l && tag[i] != '"' {
+			if tag[i] == '\\' {
+				i++
+			}
+
+			i++
+		}
+
+		// Check if there was an ending quote
+		if i >= l {
+			return errTagValueSyntax
+		}
+
+		// Jump over quote
+		i++
+
+		_, err := strconv.Unquote(tag[j:i])
 		if err != nil {
 			return errTagValueSyntax
 		}
+
+		// There must be at least one space between two pairs
+		if i < l && tag[i] != ' ' {
+			return errTagSyntax
+		}
 	}
+
 	return nil
 }

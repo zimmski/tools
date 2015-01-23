@@ -193,6 +193,7 @@ package loader
 //   eagerly.)
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -339,6 +340,8 @@ type Program struct {
 	// encountered by Load: all initial packages and all
 	// dependencies, including incomplete ones.
 	AllPackages map[*types.Package]*PackageInfo
+
+	Sources map[*ast.File]*bytes.Buffer
 }
 
 // PackageInfo holds the ASTs and facts derived by the type-checker
@@ -469,7 +472,7 @@ func (conf *Config) FromArgs(args []string, xtest bool) (rest []string, err erro
 // store filenames and defer parsing until Load.
 //
 func (conf *Config) CreateFromFilenames(path string, filenames ...string) error {
-	files, errs := parseFiles(conf.fset(), conf.build(), nil, ".", filenames, conf.ParserMode)
+	files, _, errs := parseFiles(conf.fset(), conf.build(), nil, ".", filenames, conf.ParserMode)
 	if len(errs) > 0 {
 		return errs[0]
 	}
@@ -511,7 +514,7 @@ func (conf *Config) ImportWithTests(path string) error {
 	if err != nil {
 		return err // package not found
 	}
-	xtestFiles, errs := conf.parsePackageFiles(bp, 'x')
+	xtestFiles, _, errs := conf.parsePackageFiles(bp, 'x')
 	if len(errs) > 0 {
 		// TODO(adonovan): fix: parse errors in x_test.go files
 		// cause FromArgs() to fail completely.
@@ -667,6 +670,7 @@ func (conf *Config) Load() (*Program, error) {
 		Imported:    make(map[string]*PackageInfo),
 		ImportMap:   conf.TypeChecker.Packages,
 		AllPackages: make(map[*types.Package]*PackageInfo),
+		Sources:     make(map[*ast.File]*bytes.Buffer),
 	}
 
 	imp := importer{
@@ -703,7 +707,7 @@ func (conf *Config) Load() (*Program, error) {
 			info := imp.imported[path].info // must be non-nil, see above
 			imp.importedMu.Unlock()
 
-			files, errs := imp.conf.parsePackageFiles(bp, 't')
+			files, sources, errs := imp.conf.parsePackageFiles(bp, 't')
 			for _, err := range errs {
 				info.appendError(err)
 			}
@@ -711,6 +715,10 @@ func (conf *Config) Load() (*Program, error) {
 			// but may import packages that import P,
 			// so we must disable the cycle check.
 			imp.addFiles(info, files, false)
+
+			for i := range files {
+				prog.Sources[files[i]] = sources[i]
+			}
 		}
 	}
 
@@ -841,7 +849,7 @@ func (conf *Config) findSourcePackage(path string) (*build.Package, error) {
 //    't': include in-package *_test.go source files (TestGoFiles)
 //    'x': include external *_test.go source files. (XTestGoFiles)
 //
-func (conf *Config) parsePackageFiles(bp *build.Package, which rune) ([]*ast.File, []error) {
+func (conf *Config) parsePackageFiles(bp *build.Package, which rune) ([]*ast.File, []*bytes.Buffer, []error) {
 	var filenames []string
 	switch which {
 	case 'g':
@@ -854,19 +862,20 @@ func (conf *Config) parsePackageFiles(bp *build.Package, which rune) ([]*ast.Fil
 		panic(which)
 	}
 
-	files, errs := parseFiles(conf.fset(), conf.build(), conf.DisplayPath, bp.Dir, filenames, conf.ParserMode)
+	files, sources, errs := parseFiles(conf.fset(), conf.build(), conf.DisplayPath, bp.Dir, filenames, conf.ParserMode)
 
 	// Preprocess CgoFiles and parse the outputs (sequentially).
 	if which == 'g' && bp.CgoFiles != nil {
-		cgofiles, err := processCgoFiles(bp, conf.fset(), conf.DisplayPath, conf.ParserMode)
+		cgofiles, cgosources, err := processCgoFiles(bp, conf.fset(), conf.DisplayPath, conf.ParserMode)
 		if err != nil {
 			errs = append(errs, err)
 		} else {
 			files = append(files, cgofiles...)
+			sources = append(sources, cgosources...)
 		}
 	}
 
-	return files, errs
+	return files, sources, errs
 }
 
 // doImport imports the package denoted by path.
@@ -1064,12 +1073,16 @@ func (imp *importer) loadFromSource(path string) (*PackageInfo, error) {
 	}
 	info := imp.newPackageInfo(path)
 	info.Importable = true
-	files, errs := imp.conf.parsePackageFiles(bp, 'g')
+	files, sources, errs := imp.conf.parsePackageFiles(bp, 'g')
 	for _, err := range errs {
 		info.appendError(err)
 	}
 
 	imp.addFiles(info, files, true)
+
+	for i := range files {
+		imp.prog.Sources[files[i]] = sources[i]
+	}
 
 	imp.typecheckerMu.Lock()
 	imp.conf.TypeChecker.Packages[path] = info.Pkg

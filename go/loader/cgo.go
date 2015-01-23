@@ -48,11 +48,13 @@ package loader
 // lookups in which y=m[k] and y,ok=m[k] are both legal.
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/build"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -65,10 +67,10 @@ import (
 // processCgoFiles invokes the cgo preprocessor on bp.CgoFiles, parses
 // the output and returns the resulting ASTs.
 //
-func processCgoFiles(bp *build.Package, fset *token.FileSet, DisplayPath func(path string) string, mode parser.Mode) ([]*ast.File, error) {
+func processCgoFiles(bp *build.Package, fset *token.FileSet, DisplayPath func(path string) string, mode parser.Mode) ([]*ast.File, []*bytes.Buffer, error) {
 	tmpdir, err := ioutil.TempDir("", strings.Replace(bp.ImportPath, "/", "_", -1)+"_C")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.RemoveAll(tmpdir)
 
@@ -79,23 +81,31 @@ func processCgoFiles(bp *build.Package, fset *token.FileSet, DisplayPath func(pa
 
 	cgoFiles, cgoDisplayFiles, err := runCgo(bp, pkgdir, tmpdir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var files []*ast.File
+	var sources []*bytes.Buffer
 	for i := range cgoFiles {
 		rd, err := os.Open(cgoFiles[i])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		defer rd.Close()
 		display := filepath.Join(bp.Dir, cgoDisplayFiles[i])
-		f, err := parser.ParseFile(fset, display, rd, mode)
-		if err != nil {
-			return nil, err
+
+		var src bytes.Buffer
+		if _, err := io.Copy(&src, rd); err != nil {
+			return nil, nil, err
+		} else {
+			f, err := parser.ParseFile(fset, display, &src, mode)
+			if err != nil {
+				return nil, nil, err
+			}
+			files = append(files, f)
+			sources = append(sources, &src)
 		}
-		files = append(files, f)
 	}
-	return files, nil
+	return files, sources, nil
 }
 
 var cgoRe = regexp.MustCompile(`[/\\:]`)

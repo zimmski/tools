@@ -5,6 +5,7 @@
 package loader
 
 import (
+	"bytes"
 	"go/ast"
 	"go/build"
 	"go/parser"
@@ -23,7 +24,7 @@ import (
 // I/O is done via ctxt, which may specify a virtual file system.
 // displayPath is used to transform the filenames attached to the ASTs.
 //
-func parseFiles(fset *token.FileSet, ctxt *build.Context, displayPath func(string) string, dir string, files []string, mode parser.Mode) ([]*ast.File, []error) {
+func parseFiles(fset *token.FileSet, ctxt *build.Context, displayPath func(string) string, dir string, files []string, mode parser.Mode) ([]*ast.File, []*bytes.Buffer, []error) {
 	if displayPath == nil {
 		displayPath = func(path string) string { return path }
 	}
@@ -38,6 +39,7 @@ func parseFiles(fset *token.FileSet, ctxt *build.Context, displayPath func(strin
 	var wg sync.WaitGroup
 	n := len(files)
 	parsed := make([]*ast.File, n)
+	sources := make([]*bytes.Buffer, n)
 	errors := make([]error, n)
 	for i, file := range files {
 		if !isAbs(file) {
@@ -58,22 +60,30 @@ func parseFiles(fset *token.FileSet, ctxt *build.Context, displayPath func(strin
 				return
 			}
 
-			// ParseFile may return both an AST and an error.
-			parsed[i], errors[i] = parser.ParseFile(fset, displayPath(file), rd, mode)
-			rd.Close()
+			var src bytes.Buffer
+			if _, err := io.Copy(&src, rd); err != nil {
+				parsed[i], sources[i], errors[i] = nil, nil, err
+			} else {
+				sources[i] = &src
+
+				// ParseFile may return both an AST and an error.
+				parsed[i], errors[i] = parser.ParseFile(fset, displayPath(file), sources[i], mode)
+			}
 		}(i, file)
 	}
 	wg.Wait()
 
 	// Eliminate nils, preserving order.
 	var o int
-	for _, f := range parsed {
+	for i, f := range parsed {
 		if f != nil {
 			parsed[o] = f
+			sources[o] = sources[i]
 			o++
 		}
 	}
 	parsed = parsed[:o]
+	sources = sources[:o]
 
 	o = 0
 	for _, err := range errors {
@@ -84,7 +94,7 @@ func parseFiles(fset *token.FileSet, ctxt *build.Context, displayPath func(strin
 	}
 	errors = errors[:o]
 
-	return parsed, errors
+	return parsed, sources, errors
 }
 
 // scanImports returns the set of all package import paths from all
